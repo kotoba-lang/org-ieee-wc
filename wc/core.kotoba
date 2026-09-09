@@ -111,46 +111,121 @@ b" 1 2))
       (count-words s (+ i w) n (if sp false true)
                    (if (if sp false (if in? false true)) (+ acc 1) acc)))))
 
-(defn main [] :i64
-  (let [total (arg "")
-        flag (arg "0")
-        flagged? (if (string=? total "2")
-                   (if (string=? flag "-l") true
-                     (if (string=? flag "-w") true
-                       (if (string=? flag "-c") true false)))
-                   false)
-        path (if flagged? (arg "1") (arg "0"))
-        ;; `wc: PATH: open: No such file or directory` -- wc says `open:` and
-        ;; the others do not. Measured, not copied from a sibling.
-        ok (readable? path)
-        text (if ok (slurp-file path) "")
+(defn digit-value [s :string i :i64] :i64
+  (let [c (string-code-point-at s i)]
+    (if (< c 48) -1 (if (> c 57) -1 (- c 48)))))
+
+(defn text->i64 [s :string i :i64 n :i64 acc :i64] :i64
+  (if (>= i n)
+    acc
+    (let [d (digit-value s i)]
+      (if (< d 0) -1 (text->i64 s (+ i 1) n (+ (* acc 10) d))))))
+
+(defn parse-count [s :string] :i64
+  (let [n (string-byte-length s)]
+    (if (= n 0) -1 (text->i64 s 0 n 0))))
+
+;; --- several operands ----------------------------------------------------
+;;
+;; Each operand gets its own line, and TWO OR MORE get a `total` line after
+;; them. Measured against /usr/bin/wc 2026-09-10: an unreadable operand is
+;; reported, excluded from the totals, and makes the exit status 1 while the
+;; readable ones still print and still sum -- `wc h1 nope h2` totals 5, which
+;; is 3 + 2 and not 3 + 0 + 2.
+;;
+;; The totals come from a SECOND walk rather than from accumulators threaded
+;; through the first. Three sums plus the index, the operand count and the
+;; flag is seven parameters where the compiler admits five
+;; (`kotoba.compiler.frontend/max-parameters`, an ABI arity limit rather than
+;; a language decision), and a recursion can carry back only one i64 in any
+;; case. The cost is real and worth naming: with no flag each operand is read
+;; four times and its words counted twice, because words are one guest call
+;; per code point and that is the whole cost of the command on a large file.
+;; If the arity limit moves, this collapses into one walk.
+(defn metric-of [text :string which :i64] :i64
+  (if (= which 0)
+    (count-newlines text 0)
+    (if (= which 1)
+      (count-words text 0 (string-byte-length text) false 0)
+      (string-byte-length text))))
+
+(defn sum-of [i :i64 total :string which :i64 acc :i64] :i64
+  (if (string=? (decimal-of i) total)
+    acc
+    (let [path (arg (decimal-of i))]
+      (if (readable? path)
+        (sum-of (+ i 1) total which
+                (+ acc (metric-of (slurp-file path) which)))
+        (sum-of (+ i 1) total which acc)))))
+
+;; The three fields, in wc's order, for whichever the flag selects.
+(defn fields-of [lines :i64 words :i64 bytes :i64 flagged? :i64] :i64
+  (if (= flagged? 1)
+    (let [flag (arg "0")]
+      (do
+        (if (string=? flag "-l") (emit (field lines)) "")
+        (if (string=? flag "-w") (emit (field words)) "")
+        (if (string=? flag "-c") (emit (field bytes)) "")
+        0))
+    (do (emit (field lines)) (emit (field words)) (emit (field bytes)) 0)))
+
+(defn print-one [path :string flagged? :i64] :i64
+  (let [text (slurp-file path)
         bytes (string-byte-length text)
-        ;; Words are counted only when they are going to be printed. The walk
-        ;; is one guest call per CODE POINT, so on a large operand it is the
-        ;; whole cost of the command -- computing it for `-c` would make the
-        ;; cheapest question the most expensive one, and would put the
-        ;; eight-digit case out of reach of a test that has to fit in fuel.
-        want-words? (if flagged? (string=? flag "-w") true)
+        flag (arg "0")
+        want-words? (if (= flagged? 1) (string=? flag "-w") true)
         words (if want-words? (count-words text 0 bytes false 0) 0)
-        lines (if (if flagged? (string=? flag "-l") true)
+        lines (if (if (= flagged? 1) (string=? flag "-l") true)
                 (count-newlines text 0)
                 0)]
-    (if (if ok false true)
-      (do
-        (emit-error "wc: ")
-        (emit-error path)
-        (emit-error ": open: No such file or directory")
-        (emit-error (nl))
-        1)
     (do
-      (if flagged?
-        (do
-          (if (string=? flag "-l") (emit (field lines)) "")
-          (if (string=? flag "-w") (emit (field words)) "")
-          (if (string=? flag "-c") (emit (field bytes)) "")
-          0)
-        (do (emit (field lines)) (emit (field words)) (emit (field bytes)) 0))
+      (fields-of lines words bytes flagged?)
       (emit " ")
       (emit path)
       (emit (nl))
-      0))))
+      0)))
+
+;; `wc: PATH: open: No such file or directory` -- wc says `open:` and the
+;; others do not. Measured, not copied from a sibling.
+(defn complain [path :string] :i64
+  (do
+    (emit-error "wc: ")
+    (emit-error path)
+    (emit-error ": open: No such file or directory")
+    (emit-error (nl))
+    1))
+
+;; Returns 1 if any operand was unreadable. The walk continues past one.
+(defn print-each [i :i64 total :string flagged? :i64] :i64
+  (if (string=? (decimal-of i) total)
+    0
+    (let [path (arg (decimal-of i))]
+      (if (readable? path)
+        (do (print-one path flagged?) (print-each (+ i 1) total flagged?))
+        (do (complain path) (print-each (+ i 1) total flagged?) 1)))))
+
+(defn print-total [i :i64 total :string flagged? :i64] :i64
+  (do
+    (fields-of (sum-of i total 0 0) (sum-of i total 1 0) (sum-of i total 2 0)
+               flagged?)
+    (emit " total")
+    (emit (nl))
+    0))
+
+(defn main [] :i64
+  (let [total (arg "")
+        flag (arg "0")
+        flagged? (if (string=? flag "-l") 1
+                   (if (string=? flag "-w") 1
+                     (if (string=? flag "-c") 1 0)))
+        first-file (if (= flagged? 1) 1 0)
+        files (- (parse-count total) first-file)]
+    (if (< files 1)
+      ;; No file operand. POSIX reads standard input; there is no stdin
+      ;; capability, so this refuses rather than pretending to have read an
+      ;; empty one.
+      1
+      (let [failed (print-each first-file total flagged?)]
+        (do
+          (if (> files 1) (print-total first-file total flagged?) 0)
+          failed)))))

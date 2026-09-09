@@ -92,7 +92,27 @@
    ;; A MISSING operand: matched on stderr and exit status since wire 35
    ;; gained an EXISTS form. Every utility words this differently --
    ;; measured on each, not copied from a sibling.
-   ["missing"]])
+   ["missing"]
+   ;; --- two or more operands ------------------------------------------
+   ;; Each operand gets its own line and two or more get a `total` line.
+   ;; With ONE operand there is no total, which is the case an
+   ;; implementation that always prints one fails.
+   ["two-lines" "blanks"] ["two-lines" "two-lines"]
+   ["-l" "two-lines" "blanks"] ["-w" "two-lines" "blanks"]
+   ["-c" "two-lines" "blanks"]
+   ;; An empty operand contributes a zero row and nothing to the total.
+   ["two-lines" "empty" "blanks"]
+   ;; Multi-byte among several, since words are counted per code point.
+   ["utf8" "tabs"]
+   ;; An unreadable operand is reported, EXCLUDED from the totals, and makes
+   ;; the exit status 1 while the readable ones still print and still sum.
+   ;; A totals walk that counted the missing operand as a zero row would
+   ;; still produce the right sums -- what it would get wrong is the row
+   ;; itself, which is why the per-file lines are compared too.
+   ["two-lines" "missing" "blanks"] ["missing" "two-lines"]
+   ["-l" "two-lines" "missing"]
+   ;; Three operands.
+   ["two-lines" "blanks" "tabs"]])
 
 (when-not amu-home (refuse "set AMU_HOME to an amu checkout"))
 (let [amu (.join path amu-home "bin" "amu")

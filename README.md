@@ -68,8 +68,38 @@ a test that has to fit in fuel.
 
 `:cli/args` (38), `:fs/app-data` (35), `:io/write` (37).
 
+## Several files, and a `total` line
+
+Each operand gets its own row, and **two or more** get a `total` row after
+them. With one operand there is no total — the case an implementation that
+always prints one fails, and it fails all 17 single-operand cases.
+
+An unreadable operand is reported, **excluded from the totals**, and makes
+the exit status 1 while the readable ones still print and still sum:
+`wc h1 nope h2` totals 5, which is 3 + 2 and not 3 + 0 + 2. Measured against
+`/usr/bin/wc` 2026-09-10.
+
+That exclusion is deliberately *not* claimed as tested by the totals: a walk
+that counted a missing operand as a zero row would produce identical sums.
+What such a walk gets wrong is the per-file row, which is why every row is
+compared too. The control that does bite the sums is stopping the
+accumulation — every total becomes 0 and all 11 multi-operand cases fail.
+
+### The totals cost a second walk
+
+Three sums plus the index, the operand count and the flag is seven
+parameters where the compiler admits five
+(`kotoba.compiler.frontend/max-parameters`, an ABI arity limit rather than a
+language decision), and a recursion can carry back only one `i64` in any
+case. So the totals come from a second walk rather than from accumulators
+threaded through the first.
+
+The cost is real and worth naming rather than hiding: with no flag each
+operand is read four times and its words counted twice, because words are one
+guest call per code point and that is the whole cost of the command on a
+large file. If the arity limit moves, this collapses into one walk.
+
 ## What this is not
 
-One operand. `/usr/bin/wc` with several prints a `total` line, which this
-does not. No `-m` (characters), and no reading standard input — there is no
-stdin capability.
+No `-m` (characters), and no reading standard input — with no file operand
+this exits 1 rather than pretending to have read an empty one.
