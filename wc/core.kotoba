@@ -1,0 +1,131 @@
+;; wc -- POSIX wc (IEEE Std 1003.1) as a Kotoba command, for ONE operand.
+;;
+;;   wc FILE        lines, words and bytes
+;;   wc -l FILE     lines
+;;   wc -w FILE     words
+;;   wc -c FILE     bytes
+;;
+;; ## The output format, measured rather than guessed
+;;
+;; macOS /usr/bin/wc prints each count as `" %7d"` -- one leading space and
+;; the number right-aligned in seven columns -- and then a space and the
+;; operand. Measured 2026-09-10: a count of 5 prints as eight characters
+;; (seven spaces then `5`), and 12345678 prints as nine (one space then the
+;; eight digits), which is what says the seven is a MINIMUM width and the
+;; leading space is unconditional. A fixed field of eight would have matched
+;; the first and not the second.
+;;
+;; Capabilities: :cli/args (38), :fs/app-data (35), :io/write (37).
+;;
+;; ## Fuel
+;;
+;; Counting words walks the operand one CODE POINT at a time, so the guest
+;; recursion is as long as the file. Fuel is a constant of the packaged
+;; binary (`--fuel`), not something the caller supplies -- like the grant,
+;; the scopes and the string arena. The default 512 counts almost nothing;
+;; package with a budget that matches the files you mean to count.
+(ns wc.core (:export [main]))
+
+(defn arg [i :string] :string
+  (typed-cap-call :cli/args :string :string i))
+
+(defn emit [s :string] :string
+  (typed-cap-call :io/write :string :string s))
+
+(defn slurp-file [path :string] :string
+  (typed-cap-call :fs/app-data :string :string path))
+
+(defn digit-text [d :i64] :string
+  (string-substring "0123456789" d (+ d 1)))
+
+(defn decimal-of [n :i64] :string
+  (if (< n 10)
+    (digit-text n)
+    (string-concat (decimal-of (quot n 10))
+                   (digit-text (- n (* 10 (quot n 10)))))))
+
+(defn nl [] :string
+  (string-substring "a
+b" 1 2))
+
+;; Left-pad to at least seven columns, then the unconditional leading space:
+;; `" %7d"`. Recursion depth is the padding, which is at most six.
+(defn pad-to [s :string width :i64] :string
+  (if (>= (string-byte-length s) width)
+    s
+    (pad-to (string-concat " " s) width)))
+
+(defn field [n :i64] :string
+  (string-concat " " (pad-to (decimal-of n) 7)))
+
+;; --- counting -----------------------------------------------------------
+
+;; Lines are NEWLINES, not "pieces": a file with no trailing newline has one
+;; fewer line than it has pieces of text, which is why `wc` answers 0 for a
+;; one-line file that does not end in one. Measured against /usr/bin/wc.
+(defn count-newlines [s :string acc :i64] :i64
+  (let [i (string-index-of s "\n")]
+    (if (< i 0)
+      acc
+      (count-newlines (string-substring s (+ i 1) (string-byte-length s)) (+ acc 1)))))
+
+;; The UTF-8 width of the code point starting at byte offset I, derived from
+;; its VALUE -- the contract `string-code-point-at` states, and the only way
+;; to walk a string without constructing an offset that splits a code point.
+(defn cp-width [c :i64] :i64
+  (if (< c 128) 1 (if (< c 2048) 2 (if (< c 65536) 3 4))))
+
+(defn space? [c :i64] :bool
+  (if (= c 32) true
+    (if (= c 9) true
+      (if (= c 10) true
+        (if (= c 11) true
+          (if (= c 12) true
+            (if (= c 13) true false)))))))
+
+;; A word is a maximal run of non-whitespace, so the count is the number of
+;; transitions INTO one. `in?` carries whether the previous code point was
+;; part of a word; without it a multi-character word would count once per
+;; character.
+(defn count-words [s :string i :i64 n :i64 in? :bool acc :i64] :i64
+  (if (>= i n)
+    acc
+    (let [c (string-code-point-at s i)
+          w (cp-width c)
+          sp (space? c)]
+      (count-words s (+ i w) n (if sp false true)
+                   (if (if sp false (if in? false true)) (+ acc 1) acc)))))
+
+(defn main [] :i64
+  (let [total (arg "")
+        flag (arg "0")
+        flagged? (if (string=? total "2")
+                   (if (string=? flag "-l") true
+                     (if (string=? flag "-w") true
+                       (if (string=? flag "-c") true false)))
+                   false)
+        path (if flagged? (arg "1") (arg "0"))
+        text (slurp-file path)
+        bytes (string-byte-length text)
+        ;; Words are counted only when they are going to be printed. The walk
+        ;; is one guest call per CODE POINT, so on a large operand it is the
+        ;; whole cost of the command -- computing it for `-c` would make the
+        ;; cheapest question the most expensive one, and would put the
+        ;; eight-digit case out of reach of a test that has to fit in fuel.
+        want-words? (if flagged? (string=? flag "-w") true)
+        words (if want-words? (count-words text 0 bytes false 0) 0)
+        lines (if (if flagged? (string=? flag "-l") true)
+                (count-newlines text 0)
+                0)]
+    (do
+      (if flagged?
+        (do
+          (if (string=? flag "-l") (emit (field lines)) "")
+          (if (string=? flag "-w") (emit (field words)) "")
+          (if (string=? flag "-c") (emit (field bytes)) "")
+          0)
+        (do (emit (field lines)) (emit (field words)) (emit (field bytes)) 0))
+      (emit " ")
+      (emit path)
+      (emit (nl))
+      0)))
