@@ -90,6 +90,15 @@ b" 1 2))
 (defn cp-width [c :i64] :i64
   (if (< c 128) 1 (if (< c 2048) 2 (if (< c 65536) 3 4))))
 
+;; -m counts CODE POINTS, which is a different question from -c's bytes:
+;; measured, a file holding 日本語 plus a space, an `a` and a newline is 12
+;; bytes and 6 characters. The walk advances by the width the leading byte
+;; declares, the same step count-words takes.
+(defn count-chars [s :string i :i64 n :i64 acc :i64] :i64
+  (if (>= i n)
+    acc
+    (count-chars s (+ i (cp-width (string-code-point-at s i))) n (+ acc 1))))
+
 (defn space? [c :i64] :bool
   (if (= c 32) true
     (if (= c 9) true
@@ -147,7 +156,9 @@ b" 1 2))
     (count-newlines text 0)
     (if (= which 1)
       (count-words text 0 (string-byte-length text) false 0)
-      (string-byte-length text))))
+      (if (= which 3)
+        (count-chars text 0 (string-byte-length text) 0)
+        (string-byte-length text)))))
 
 (defn sum-of [i :i64 total :string which :i64 acc :i64] :i64
   (if (string=? (decimal-of i) total)
@@ -158,28 +169,52 @@ b" 1 2))
                 (+ acc (metric-of (slurp-file path) which)))
         (sum-of (+ i 1) total which acc)))))
 
-;; The three fields, in wc's order, for whichever the flag selects.
-(defn fields-of [lines :i64 words :i64 bytes :i64 flagged? :i64] :i64
-  (if (= flagged? 1)
-    (let [flag (arg "0")]
+;; --- the flag ------------------------------------------------------------
+;; Derived, not threaded. It used to be a `flagged?` parameter carried through
+;; four functions, which is a value every one of them could have disagreed
+;; about; there is one argument vector and one answer.
+(defn flag [] :string
+  (let [a (arg "0")]
+    (if (= (string-index-of a "-") 0) a "")))
+
+(defn flagged? [] :i64
+  (let [f (flag)]
+    (if (string=? f "-l") 1
+      (if (string=? f "-w") 1
+        (if (string=? f "-c") 1
+          (if (string=? f "-m") 1 0))))))
+
+;; The fields, in wc's order, for whichever the flag selects. With no flag it
+;; is lines, words and BYTES -- never characters, which only -m asks for.
+(defn fields-of [lines :i64 words :i64 bytes :i64 chars :i64] :i64
+  (if (= (flagged?) 1)
+    (let [f (flag)]
       (do
-        (if (string=? flag "-l") (emit (field lines)) "")
-        (if (string=? flag "-w") (emit (field words)) "")
-        (if (string=? flag "-c") (emit (field bytes)) "")
+        (if (string=? f "-l") (emit (field lines)) "")
+        (if (string=? f "-w") (emit (field words)) "")
+        (if (string=? f "-c") (emit (field bytes)) "")
+        (if (string=? f "-m") (emit (field chars)) "")
         0))
     (do (emit (field lines)) (emit (field words)) (emit (field bytes)) 0)))
 
-(defn print-one [path :string flagged? :i64] :i64
+;; Each count is taken only when it is going to be printed. The word walk is
+;; one guest call per code point and so is the character walk, which on a
+;; large operand is the whole cost of the command -- computing either for `-c`
+;; would make the cheapest question the most expensive one.
+(defn print-one [path :string] :i64
   (let [text (slurp-file path)
         bytes (string-byte-length text)
-        flag (arg "0")
-        want-words? (if (= flagged? 1) (string=? flag "-w") true)
-        words (if want-words? (count-words text 0 bytes false 0) 0)
-        lines (if (if (= flagged? 1) (string=? flag "-l") true)
+        f (flag)
+        on? (= (flagged?) 1)
+        words (if (if on? (string=? f "-w") true)
+                (count-words text 0 bytes false 0)
+                0)
+        lines (if (if on? (string=? f "-l") true)
                 (count-newlines text 0)
-                0)]
+                0)
+        chars (if (if on? (string=? f "-m") false) (count-chars text 0 bytes 0) 0)]
     (do
-      (fields-of lines words bytes flagged?)
+      (fields-of lines words bytes chars)
       (emit " ")
       (emit path)
       (emit (nl))
@@ -196,36 +231,32 @@ b" 1 2))
     1))
 
 ;; Returns 1 if any operand was unreadable. The walk continues past one.
-(defn print-each [i :i64 total :string flagged? :i64] :i64
+(defn print-each [i :i64 total :string] :i64
   (if (string=? (decimal-of i) total)
     0
     (let [path (arg (decimal-of i))]
       (if (readable? path)
-        (do (print-one path flagged?) (print-each (+ i 1) total flagged?))
-        (do (complain path) (print-each (+ i 1) total flagged?) 1)))))
+        (do (print-one path) (print-each (+ i 1) total))
+        (do (complain path) (print-each (+ i 1) total) 1)))))
 
-(defn print-total [i :i64 total :string flagged? :i64] :i64
+(defn print-total [i :i64 total :string] :i64
   (do
-    (fields-of (sum-of i total 0 0) (sum-of i total 1 0) (sum-of i total 2 0)
-               flagged?)
+    (fields-of (sum-of i total 0 0) (sum-of i total 1 0)
+               (sum-of i total 2 0) (sum-of i total 3 0))
     (emit " total")
     (emit (nl))
     0))
 
 (defn main [] :i64
   (let [total (arg "")
-        flag (arg "0")
-        flagged? (if (string=? flag "-l") 1
-                   (if (string=? flag "-w") 1
-                     (if (string=? flag "-c") 1 0)))
-        first-file (if (= flagged? 1) 1 0)
+        first-file (if (= (flagged?) 1) 1 0)
         files (- (parse-count total) first-file)]
     (if (< files 1)
       ;; No file operand. POSIX reads standard input; there is no stdin
       ;; capability, so this refuses rather than pretending to have read an
       ;; empty one.
       1
-      (let [failed (print-each first-file total flagged?)]
+      (let [failed (print-each first-file total)]
         (do
-          (if (> files 1) (print-total first-file total flagged?) 0)
+          (if (> files 1) (print-total first-file total) 0)
           failed)))))

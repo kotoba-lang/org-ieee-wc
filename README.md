@@ -99,6 +99,26 @@ operand is read four times and its words counted twice, because words are one
 guest call per code point and that is the whole cost of the command on a
 large file. If the arity limit moves, this collapses into one walk.
 
+## `-m` counts code points, `-c` counts bytes
+
+Measured: a file holding `日本語`, a space, an `a` and a newline is **12
+bytes** and **6 characters**.
+
+Over an ASCII fixture the two agree, which is the whole reason the multi-byte
+one carries the distinction: both controls — making per-file `-m` answer bytes,
+and making the `total` row sum bytes — fail **only** the cases involving the
+multi-byte fixture, and every ASCII case correctly survives them.
+
+Each count is taken only when it will be printed. The character walk is one
+guest call per code point, exactly like the word walk, so computing it for
+`-c` would make the cheapest question the most expensive one.
+
+### The flag is derived, not threaded
+
+It used to be a `flagged?` parameter carried through four functions — a value
+each of them could have disagreed about. There is one argument vector, so
+there is one answer, and the functions ask for it.
+
 ## What this is not
 
 No `-m` (characters), and no reading standard input — with no file operand

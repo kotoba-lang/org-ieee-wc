@@ -112,7 +112,17 @@
    ["two-lines" "missing" "blanks"] ["missing" "two-lines"]
    ["-l" "two-lines" "missing"]
    ;; Three operands.
-   ["two-lines" "blanks" "tabs"]])
+   ["two-lines" "blanks" "tabs"]
+   ;; --- -m counts CODE POINTS, which -c does not ------------------------
+   ;; `utf8` is multi-byte, so -m and -c give different answers over it; over
+   ;; an ASCII fixture they agree, which is why the multi-byte one is the
+   ;; case that carries the distinction.
+   ["-m" "utf8"] ["-c" "utf8"] ["-m" "two-lines"]
+   ["-m" "empty"] ["-m" "tabs"] ["-m" "no-nl"]
+   ;; Several operands, with a total.
+   ["-m" "utf8" "two-lines"] ["-m" "utf8" "utf8"]
+   ;; A missing operand under -m.
+   ["-m" "missing"] ["-m" "utf8" "missing"]])
 
 (when-not amu-home (refuse "set AMU_HOME to an amu checkout"))
 (let [amu (.join path amu-home "bin" "amu")
