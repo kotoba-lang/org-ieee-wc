@@ -30,7 +30,7 @@ that uses it: bytes need no walk, so the boundary costs one read.
 
 ## Measured against the system utility
 
-`test/wc_test.cljs` compiles the guest, packages it, **runs the binary**, and
+`test/wc_test.cljk` compiles the guest, packages it, **runs the binary**, and
 compares bytes against `/usr/bin/wc`. Sixteen cases, all byte-identical.
 
 Each earns its place:
