@@ -1,4 +1,4 @@
-;; test/wc_test.cljs — build the command and compare it with the system
+;; test/wc_test.cljk — build the command and compare it with the system
 ;; wc, byte for byte, output format included.
 ;;
 ;; This does not assert that the guest COMPILES. It compiles it, packages it
