@@ -79,13 +79,14 @@ b" 1 2))
 ;; fewer line than it has pieces of text, which is why `wc` answers 0 for a
 ;; one-line file that does not end in one. Measured against /usr/bin/wc.
 (defn count-newlines-from [s :string pos :i64 n :i64 acc :i64] :i64
-  ;; The search view is a handle; the region (arena-scope, ABI v6) releases
-  ;; it as the step answers its offset, so the walk carries only scalars
-  ;; where it used to leave one handle per line behind.
-  (let [i (arena-scope (string-index-of (string-substring s pos n) "\n"))]
+  ;; One host search from POS (`string-index-of-from`, context ABI v8), no
+  ;; view; the needle literal is a handle each time it is evaluated, so
+  ;; the search is a region (arena-scope, ABI v6) and the walk carries only
+  ;; scalars.
+  (let [i (arena-scope (string-index-of-from s "\n" pos))]
     (if (< i 0)
       acc
-      (count-newlines-from s (+ pos (+ i 1)) n (+ acc 1)))))
+      (count-newlines-from s (+ i 1) n (+ acc 1)))))
 
 (defn count-newlines [s :string acc :i64] :i64
   (count-newlines-from s 0 (string-byte-length s) acc))
