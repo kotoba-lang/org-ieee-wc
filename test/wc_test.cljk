@@ -122,7 +122,21 @@
    ;; Several operands, with a total.
    ["-m" "utf8" "two-lines"] ["-m" "utf8" "utf8"]
    ;; A missing operand under -m.
-   ["-m" "missing"] ["-m" "utf8" "missing"]])
+   ["-m" "missing"] ["-m" "utf8" "missing"]
+   ;; --- standard input (wire 41, 2026-09-16) ---------------------------
+   ;; A map case names a fixture fed as stdin; no operand, so no name
+   ;; column -- the case that separates "print the fields" from "print the
+   ;; fields and the path". 84% of wc's invocations in agent tool use.
+   {:argv [] :stdin "two-lines"}
+   {:argv ["-l"] :stdin "two-lines"}
+   {:argv ["-w"] :stdin "utf8"}
+   {:argv ["-c"] :stdin "utf8"}
+   {:argv ["-m"] :stdin "utf8"}
+   {:argv [] :stdin "empty"}
+   {:argv ["-l"] :stdin "no-nl"}
+   {:argv [] :stdin "blanks"}
+   ;; Past one pipe buffer: the whole-input form keeps reading to EOF.
+   {:argv ["-l"] :stdin :one-megabyte}])
 
 (when-not amu-home (refuse "set AMU_HOME to an amu checkout"))
 (let [amu (.join path amu-home "bin" "amu")
@@ -141,7 +155,7 @@
         blob (.join path tmp "wc.bin")
         exe (.join path tmp "wc")
         exe-big (.join path tmp "wc-big")]
-    (.writeFileSync fs policy "{:allow #{[:cap/call 35] [:cap/call 37] [:cap/call 38] [:cap/call 39]}}" "utf8")
+    (.writeFileSync fs policy "{:allow #{[:cap/call 35] [:cap/call 37] [:cap/call 38] [:cap/call 39] [:cap/call 41]}}" "utf8")
     ;; The fixtures live in the tree the binary is packaged for. The native
     ;; loader refuses a relative request outright, so operands are absolute.
     (let [data (.join path tmp "data")]
@@ -172,27 +186,37 @@
       ;; the default 512 fuel counts almost nothing.
       (doseq [[out extra] [[exe ["--fuel" "20000000" "--string-pool" "12000000"]]]]
         (let [p (run "node" (into [kbb "--backend" "sci" packager "--code" blob "--offset" offset "--isa" "aarch64"
-                                  "--allow" "35,37,38,39"
+                                  "--allow" "35,37,38,39,41"
                                   "--fs-scope" (.realpathSync fs (.join path tmp "data"))
                                   "--output" out]
                                  extra) {})]
           (when (not= 0 (:status p)) (refuse (str "package failed: " (str (:err p))))))))
     ;; Now the only thing that matters: run it.
     (let [results
-          (for [names cases]
-            (let [argv (mapv #(if (str/starts-with? % "-")
+          (for [case cases]
+            (let [names (if (map? case) (:argv case) case)
+                  input (when (map? case)
+                          (let [f (:stdin case)]
+                            (if (= f :one-megabyte)
+                              (.repeat "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde\n" 16384)
+                              (get fixtures f))))
+                  ;; A Buffer, not a string: spawnSync applies :encoding
+                  ;; "buffer" to a string input and node refuses it.
+                  opts (if input {:input (js/Buffer.from input "utf8")} {})
+                  argv (mapv #(if (str/starts-with? % "-")
                                 %
                                 (.join path (.realpathSync fs (.join path tmp "data")) %))
                              names)
-                  k (run exe argv {})
-                  s (run system-wc argv {})
+                  k (run exe argv opts)
+                  s (run system-wc argv opts)
                   same? (and (= (.toString (:out k) "base64") (.toString (:out s) "base64"))
                              ;; stderr too: a missing operand differs there
                              ;; and nowhere else, so a suite that compared
                              ;; only stdout and status would call it green.
                              (= (.toString (:err k) "base64") (.toString (:err s) "base64"))
                              (= (:status k) (:status s)))]
-              {:argv names :ok same? :kotoba (.toString (:out k) "utf8")
+              {:argv (if (map? case) [(:argv case) :stdin (:stdin case)] names)
+               :ok same? :kotoba (.toString (:out k) "utf8")
                :system (.toString (:out s) "utf8")
                :exit [(:status k) (:status s)]}))
           bad (remove :ok results)]

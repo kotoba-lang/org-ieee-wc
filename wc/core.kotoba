@@ -4,6 +4,12 @@
 ;;   wc -l FILE     lines
 ;;   wc -w FILE     words
 ;;   wc -c FILE     bytes
+;;   ... | wc [-lwcm]  the same over standard input, no name column (wire 41,
+;;                  2026-09-16: 84% of wc's invocations in agent tool use are
+;;                  a later pipeline segment, 5,092 of 6,096 measured; the
+;;                  `wc -l | tr -d ' '` idiom alone is 2,273). Whole-input
+;;                  form; input past the string pool is refused, not counted
+;;                  short.
 ;;
 ;; ## The output format, measured rather than guessed
 ;;
@@ -34,6 +40,9 @@
 
 (defn slurp-file [path :string] :string
   (typed-cap-call :fs/app-data :string :string path))
+
+(defn stdin [n :string] :string
+  (typed-cap-call :io/read :string :string n))
 
 (defn emit-error [s :string] :string
   (typed-cap-call :io/write-error :string :string s))
@@ -203,9 +212,11 @@ b" 1 2))
 ;; one guest call per code point and so is the character walk, which on a
 ;; large operand is the whole cost of the command -- computing either for `-c`
 ;; would make the cheapest question the most expensive one.
-(defn print-one [path :string] :i64
-  (let [text (slurp-file path)
-        bytes (string-byte-length text)
+;; The counts of TEXT, then whatever follows them on the line: ` PATH` for
+;; an operand, nothing for standard input -- measured, `wc` on stdin prints
+;; the fields and the newline only.
+(defn print-text [text :string tail :string] :i64
+  (let [bytes (string-byte-length text)
         f (flag)
         on? (= (flagged?) 1)
         words (if (if on? (string=? f "-w") true)
@@ -217,10 +228,12 @@ b" 1 2))
         chars (if (if on? (string=? f "-m") false) (count-chars text 0 bytes 0) 0)]
     (do
       (fields-of lines words bytes chars)
-      (emit " ")
-      (emit path)
+      (emit tail)
       (emit (nl))
       0)))
+
+(defn print-one [path :string] :i64
+  (print-text (slurp-file path) (string-concat " " path)))
 
 ;; `wc: PATH: open: No such file or directory` -- wc says `open:` and the
 ;; others do not. Measured, not copied from a sibling.
@@ -254,10 +267,8 @@ b" 1 2))
         first-file (if (= (flagged?) 1) 1 0)
         files (- (parse-count total) first-file)]
     (if (< files 1)
-      ;; No file operand. POSIX reads standard input; there is no stdin
-      ;; capability, so this refuses rather than pretending to have read an
-      ;; empty one.
-      1
+      ;; No file operand: standard input, whole, and no name column.
+      (print-text (stdin "") "")
       (let [failed (print-each first-file total)]
         (do
           (if (> files 1) (print-total first-file total) 0)
