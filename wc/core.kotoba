@@ -78,11 +78,17 @@ b" 1 2))
 ;; Lines are NEWLINES, not "pieces": a file with no trailing newline has one
 ;; fewer line than it has pieces of text, which is why `wc` answers 0 for a
 ;; one-line file that does not end in one. Measured against /usr/bin/wc.
-(defn count-newlines [s :string acc :i64] :i64
-  (let [i (string-index-of s "\n")]
+(defn count-newlines-from [s :string pos :i64 n :i64 acc :i64] :i64
+  ;; The search view is a handle; the region (arena-scope, ABI v6) releases
+  ;; it as the step answers its offset, so the walk carries only scalars
+  ;; where it used to leave one handle per line behind.
+  (let [i (arena-scope (string-index-of (string-substring s pos n) "\n"))]
     (if (< i 0)
       acc
-      (count-newlines (string-substring s (+ i 1) (string-byte-length s)) (+ acc 1)))))
+      (count-newlines-from s (+ pos (+ i 1)) n (+ acc 1)))))
+
+(defn count-newlines [s :string acc :i64] :i64
+  (count-newlines-from s 0 (string-byte-length s) acc))
 
 ;; The UTF-8 width of the code point starting at byte offset I, derived from
 ;; its VALUE -- the contract `string-code-point-at` states, and the only way
@@ -99,26 +105,21 @@ b" 1 2))
     acc
     (count-chars s (+ i (cp-width (string-code-point-at s i))) n (+ acc 1))))
 
-(defn space? [c :i64] :bool
-  (if (= c 32) true
-    (if (= c 9) true
-      (if (= c 10) true
-        (if (= c 11) true
-          (if (= c 12) true
-            (if (= c 13) true false)))))))
-
-;; A word is a maximal run of non-whitespace, so the count is the number of
-;; transitions INTO one. `in?` carries whether the previous code point was
-;; part of a word; without it a multi-character word would count once per
-;; character.
-(defn count-words [s :string i :i64 n :i64 in? :bool acc :i64] :i64
-  (if (>= i n)
-    acc
-    (let [c (string-code-point-at s i)
-          w (cp-width c)
-          sp (space? c)]
-      (count-words s (+ i w) n (if sp false true)
-                   (if (if sp false (if in? false true)) (+ acc 1) acc)))))
+;; A word is a maximal run of non-blank, so the count is the number of such
+;; runs: skip the blanks to the run's start, find the blank that ends it,
+;; and again from there -- two host scans per word (`string-skip-blank` /
+;; `string-find-blank`, context ABI v7, 2026-09-16) where this was one
+;; guest call per CODE POINT. The blank set is the host's: space, \t, \n,
+;; \v, \f, \r -- the six `space?` named, and the six /usr/bin/wc splits
+;; on in the C locale (measured on the suite's tab and blank-line cases).
+(defn count-words [s :string i :i64 n :i64 acc :i64] :i64
+  (let [start (string-skip-blank s i)]
+    (if (>= start n)
+      acc
+      (let [end (string-find-blank s start)]
+        (if (< end 0)
+          (+ acc 1)
+          (count-words s end n (+ acc 1)))))))
 
 (defn digit-value [s :string i :i64] :i64
   (let [c (string-code-point-at s i)]
@@ -148,14 +149,14 @@ b" 1 2))
 ;; (`kotoba.compiler.frontend/max-parameters`, an ABI arity limit rather than
 ;; a language decision), and a recursion can carry back only one i64 in any
 ;; case. The cost is real and worth naming: with no flag each operand is read
-;; four times and its words counted twice, because words are one guest call
-;; per code point and that is the whole cost of the command on a large file.
-;; If the arity limit moves, this collapses into one walk.
+;; four times and its words counted twice. Words are two host scans per
+;; word since ABI v7, so the read is now the larger share. If the arity
+;; limit moves, this collapses into one walk.
 (defn metric-of [text :string which :i64] :i64
   (if (= which 0)
     (count-newlines text 0)
     (if (= which 1)
-      (count-words text 0 (string-byte-length text) false 0)
+      (count-words text 0 (string-byte-length text) 0)
       (if (= which 3)
         (count-chars text 0 (string-byte-length text) 0)
         (string-byte-length text)))))
@@ -207,7 +208,7 @@ b" 1 2))
         f (flag)
         on? (= (flagged?) 1)
         words (if (if on? (string=? f "-w") true)
-                (count-words text 0 bytes false 0)
+                (count-words text 0 bytes 0)
                 0)
         lines (if (if on? (string=? f "-l") true)
                 (count-newlines text 0)

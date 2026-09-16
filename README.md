@@ -52,12 +52,33 @@ else.
 
 ## Cost is packaged, not supplied
 
-Counting words walks the operand one **code point** at a time, so the guest
-recursion is as long as the file. Fuel and the string arena are constants of
-the packaged binary (`--fuel`, `--string-pool`) — like the grant and the
-filesystem scope, a caller cannot raise them. The default 512 fuel counts
-almost nothing; package with a budget that matches the files you mean to
-count.
+Counting words is two host scans per word (`string-skip-blank` to the
+word's start, `string-find-blank` to its end — amu context ABI v7,
+2026-09-16; until then one guest call per **code point**), and counting
+lines one host search per line inside a region (`arena-scope`) that
+releases the search view, so the guest recursion is as long as the file
+in words or lines and leaves nothing in the arena. Fuel and the string
+arena are constants of the packaged binary (`--fuel`, `--string-pool`) —
+like the grant and the filesystem scope, a caller cannot raise them. The
+default 512 fuel counts almost nothing; package with a budget that matches
+the files you mean to count.
+
+Measured 2026-09-16 on a 33 MB C file (769,400 lines, 4,245,400 words),
+CPU seconds user, counts identical to `/usr/bin/wc`:
+
+| flag | this wc | this wc, 2026-09-15 | `/usr/bin/wc` |
+|---|---|---|---|
+| (none) | 0.21 | 0.68 | 0.11 |
+| `-w` | 0.18 | 0.51 | 0.11 |
+| `-l` | 0.06 | 0.20 | 0.01 |
+| `-c` | 0.02 | — | 0.00 |
+
+The host's blank set is space, `\t`, `\n`, `\v`, `\f`, `\r` — the six
+`/usr/bin/wc` splits on in the C locale, measured on a file holding all
+six (7 words both ways). The column padding of this wc is measured on the
+suite's fixtures (below); on counts of seven digits and more the system
+utility widens its columns and this does not, which is a known, unfixed
+divergence of the format, not of the counts.
 
 `-c` computes only bytes, `-l` only lines, `-w` only words. That is not a
 micro-optimisation: computing words for `-c` would make the cheapest question
@@ -95,9 +116,9 @@ case. So the totals come from a second walk rather than from accumulators
 threaded through the first.
 
 The cost is real and worth naming rather than hiding: with no flag each
-operand is read four times and its words counted twice, because words are one
-guest call per code point and that is the whole cost of the command on a
-large file. If the arity limit moves, this collapses into one walk.
+operand is read four times and its words counted twice. Since the ABI v7
+scans the read is the larger share. If the arity limit moves, this
+collapses into one walk.
 
 ## `-m` counts code points, `-c` counts bytes
 
