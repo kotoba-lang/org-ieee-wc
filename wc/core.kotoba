@@ -83,7 +83,7 @@ b" 1 2))
   ;; view; the needle literal is a handle each time it is evaluated, so
   ;; the search is a region (arena-scope, ABI v6) and the walk carries only
   ;; scalars.
-  (let [i (arena-scope (string-index-of-from s "\n" pos))]
+  (let [i (string-find-byte s 10 pos)]
     (if (< i 0)
       acc
       (count-newlines-from s (+ i 1) n (+ acc 1)))))
